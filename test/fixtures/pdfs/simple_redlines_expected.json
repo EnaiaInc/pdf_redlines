@@ -1,0 +1,15 @@
+{
+  "redlines": [
+    {
+      "type": "paired",
+      "deletion": "OLD",
+      "insertion": "NEW",
+      "location": "page 1"
+    },
+    {
+      "type": "insertion",
+      "insertion": "ADD",
+      "location": "page 1"
+    }
+  ]
+}

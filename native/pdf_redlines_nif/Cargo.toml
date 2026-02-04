@@ -1,0 +1,21 @@
+[package]
+name = "pdf_redlines_nif"
+version = "0.1.0"
+edition = "2021"
+description = "NIF for extracting redlines from PDF documents using MuPDF"
+license = "MIT"
+
+[lib]
+name = "pdf_redlines_nif"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+mupdf = { version = "0.6", default-features = false, features = ["system-fonts"] }
+rustler = { version = "0.37", default-features = false, features = ["derive"] }
+
+[features]
+default = ["nif_version_2_15"]
+nif_version_2_15 = ["rustler/nif_version_2_15"]
+nif_version_2_16 = ["rustler/nif_version_2_16"]
+nif_version_2_17 = ["rustler/nif_version_2_17"]
