@@ -52,7 +52,6 @@ defmodule PDFRedlines.MixProject do
       },
       files: [
         "lib",
-        "native/pdf_redlines_nif/.cargo",
         "native/pdf_redlines_nif/src",
         "native/pdf_redlines_nif/Cargo*",
         "native/pdf_redlines_nif/Cross.toml",
