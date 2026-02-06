@@ -111,6 +111,7 @@ struct Config {
     margin_end_ratio: f32,
     margin_start_ratio: f32,
     pair_x_gap_max: f32,
+    pair_start_align_max: f32,
     page_width_fallback: f32,
     line_height_fallback: f32,
 }
@@ -137,7 +138,8 @@ impl Default for Config {
             merge_line_height_max_ratio: 1.8,
             margin_end_ratio: 0.25,
             margin_start_ratio: 0.1,
-            pair_x_gap_max: 3.0,
+            pair_x_gap_max: 1.5,
+            pair_start_align_max: 3.0,
             page_width_fallback: 600.0,
             line_height_fallback: 15.0,
         }
@@ -221,6 +223,9 @@ fn config_from_term(term: Term) -> Config {
     if let Some(v) = get_f32_from_map(&map, pair_x_gap_max()) {
         config.pair_x_gap_max = v;
     }
+    if let Some(v) = get_f32_from_map(&map, pair_start_align_max()) {
+        config.pair_start_align_max = v;
+    }
     if let Some(v) = get_f32_from_map(&map, page_width_fallback()) {
         config.page_width_fallback = v;
     }
@@ -265,6 +270,7 @@ rustler::atoms! {
     margin_end_ratio,
     margin_start_ratio,
     pair_x_gap_max,
+    pair_start_align_max,
     page_width_fallback,
     line_height_fallback,
 }
@@ -1122,7 +1128,6 @@ fn group_segments_to_redlines(
             // Allows overlapping positions (negative gap) which occur when
             // deletion and insertion chars share the same glyph position.
             let x_adjacent = next_seg.x_pos <= seg.x_end + config.pair_x_gap_max;
-
             if same_line && x_adjacent && seg.is_deletion && !next_seg.is_deletion {
                 redlines.push(NifRedline {
                     r#type: "paired".to_string(),
