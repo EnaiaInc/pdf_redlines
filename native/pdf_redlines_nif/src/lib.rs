@@ -352,26 +352,19 @@ fn is_redline_color(r: f32, g: f32, b: f32, config: Config) -> bool {
     is_red_color(r, g, b, config) || is_blue_color(r, g, b, config)
 }
 
-fn extract_rgb(color: &[f32], colorspace: &Colorspace) -> Option<(f32, f32, f32)> {
-    // Handle DeviceRGB (3 components)
-    if colorspace.n() == 3 && color.len() >= 3 {
+fn extract_rgb(color: &[f32], colorspace: &Colorspace, cp: ColorParams) -> Option<(f32, f32, f32)> {
+    // Fast path: already RGB
+    if colorspace.is_rgb() && color.len() >= 3 {
         return Some((color[0], color[1], color[2]));
     }
-    // Handle DeviceCMYK - convert to RGB
-    if colorspace.n() == 4 && color.len() >= 4 {
-        let c = color[0];
-        let m = color[1];
-        let y = color[2];
-        let k = color[3];
-        let r = (1.0 - c) * (1.0 - k);
-        let g = (1.0 - m) * (1.0 - k);
-        let b = (1.0 - y) * (1.0 - k);
-        return Some((r, g, b));
-    }
-    // DeviceGray - gray to RGB
-    if colorspace.n() == 1 && !color.is_empty() {
-        let gray = color[0];
-        return Some((gray, gray, gray));
+    // Use MuPDF's proper color conversion (handles ICC profiles, CMYK, Gray, etc.)
+    let n = colorspace.n() as usize;
+    if color.len() >= n {
+        if let Ok(rgb) = colorspace.convert_color(color, &Colorspace::device_rgb(), None, cp) {
+            if rgb.len() >= 3 {
+                return Some((rgb[0], rgb[1], rgb[2]));
+            }
+        }
     }
     None
 }
@@ -463,9 +456,9 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
@@ -549,13 +542,14 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
         let config = self.state.borrow().config;
+
         if !is_redline_color(r, g, b, config) {
             return;
         }
@@ -598,9 +592,9 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
