@@ -869,6 +869,7 @@ fn extract_text_segments(
             //   over-splitting in PDFs with large glyph positioning jumps
             let space_w = ch.height * 0.2;
             let ends_with_punct = current_text.ends_with(';')
+                || current_text.ends_with(',')
                 || current_text.ends_with(')')
                 || current_text.ends_with(']')
                 || current_text.ends_with('.');
