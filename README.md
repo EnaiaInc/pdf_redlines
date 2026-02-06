@@ -95,6 +95,15 @@ You can customize:
 - `PDF_REDLINES_TEST_DIR` (default `test/fixtures/pdfs`)
 - `PDF_REDLINES_BENCH_REPEATS` (default `3`)
 
+## Development
+
+To compile the Rust sources along with the library, you can set
+the `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL` env variable to `1`, e.g.:
+
+```bash
+RUSTLER_PRECOMPILED_FORCE_BUILD_ALL=1 mix compile
+```
+
 ## License
 
 MIT

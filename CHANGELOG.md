@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- Redline `type` field now returns atoms (`:insertion`, `:deletion`, `:paired`) instead of strings
+- Remove eager loading of Python test support module from test helper
+- Add Rust version to `.tool-versions`
+- Add development build instructions to README
+
 ## 0.6.0
 
 Major accuracy improvements to the redline extraction algorithm. On a sample of 50 redline PDFs, capture rate improved from 53.5% to 98.4%.
