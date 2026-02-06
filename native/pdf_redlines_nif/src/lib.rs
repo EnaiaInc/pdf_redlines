@@ -845,17 +845,27 @@ fn extract_text_segments(
             // behavior where uncolored spans separate colored ones).
             //
             // Adaptive threshold based on estimated space width:
-            // - Never break below 3.5x space_w (could just be wide spacing)
-            // - Use lower threshold (3.5x) after punctuation boundaries
-            //   (";", ")", "]", ".") where Python commonly splits
-            // - Use higher threshold (5x) in flowing prose to avoid
+            // - Token mode (2.3x): current segment contains '@' (email/URL),
+            //   where table layouts often separate items with unseen whitespace
+            // - Punctuation mode (2.5x): after ";", ")", "]", "."
+            // - Prose mode (5.0x): flowing text, high threshold to avoid
             //   over-splitting in PDFs with large glyph positioning jumps
             let space_w = ch.height * 0.2;
             let ends_with_punct = current_text.ends_with(';')
                 || current_text.ends_with(')')
                 || current_text.ends_with(']')
                 || current_text.ends_with('.');
-            let break_multiplier = if ends_with_punct { 2.5 } else { 5.0 };
+            // Token mode: emails/URLs use a lower break threshold because
+            // table layouts often place them side-by-side separated by
+            // uncolored whitespace the device never sees.
+            let is_token = current_text.contains('@');
+            let break_multiplier = if is_token {
+                2.3
+            } else if ends_with_punct {
+                2.5
+            } else {
+                5.0
+            };
             let intervening_text_threshold = space_w * break_multiplier;
             if x_gap > intervening_text_threshold && !current_text.is_empty() {
                 let text = current_text.trim().to_string();
