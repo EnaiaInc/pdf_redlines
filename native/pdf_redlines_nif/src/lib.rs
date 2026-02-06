@@ -894,7 +894,7 @@ fn extract_text_segments(
                 // enough to the right of the previous glyph's end, insert a
                 // space.  MuPDF device callbacks may not emit space glyphs, but
                 // Python's rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
-                let space_threshold = ch.height * 0.2;
+                let space_threshold = ch.height * 0.15;
                 if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
                     // Insert 2 spaces after sentence-ending punctuation when
                     // the gap is wide enough (~2.2x space width). This matches
