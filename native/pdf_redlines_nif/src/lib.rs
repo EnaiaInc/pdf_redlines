@@ -817,17 +817,42 @@ fn extract_text_segments(
             segment_x_end = ch.x + ch.width;
         } else {
             // Same formatting - continue segment.
-            // Synthesize spaces by geometry: if the next glyph starts far enough
-            // to the right of the previous glyph's end, insert a space.
-            // MuPDF device callbacks may not emit space glyphs, but Python's
-            // rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
             let x_gap = ch.x - segment_x_end;
-            let space_threshold = ch.height * 0.2; // ~font_size * 0.2
-            if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
-                current_text.push(' ');
+
+            // If the gap is large enough to contain intervening uncolored text,
+            // flush and start a new segment. We only see colored chars, so a
+            // gap much wider than a word-space means there's uncolored content
+            // in between that should act as a segment boundary (matching Python
+            // rawdict behavior where uncolored spans separate colored ones).
+            let intervening_text_threshold = ch.height * 0.5;
+            if x_gap > intervening_text_threshold && !current_text.is_empty() {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    segments.push(TextSegment {
+                        text,
+                        is_deletion: current_formatting == Some("strikethrough"),
+                        page,
+                        y_pos: segment_y,
+                        x_pos: segment_x,
+                        x_end: segment_x_end,
+                    });
+                }
+                current_text = ch.char.to_string();
+                segment_y = ch.y;
+                segment_x = ch.x;
+                segment_x_end = ch.x + ch.width;
+            } else {
+                // Synthesize spaces by geometry: if the next glyph starts far
+                // enough to the right of the previous glyph's end, insert a
+                // space.  MuPDF device callbacks may not emit space glyphs, but
+                // Python's rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
+                let space_threshold = ch.height * 0.2;
+                if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
+                    current_text.push(' ');
+                }
+                current_text.push(ch.char);
+                segment_x_end = ch.x + ch.width;
             }
-            current_text.push(ch.char);
-            segment_x_end = ch.x + ch.width;
         }
     }
 
