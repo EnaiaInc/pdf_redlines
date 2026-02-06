@@ -3,14 +3,67 @@
 //! This module provides Elixir bindings for the Rust-based redline extractor.
 
 use mupdf::{
-    ColorParams, Colorspace, Device, Document, Matrix, NativeDevice, Path, PathWalker, StrokeState,
-    Text,
+    text_page::TextPageFlags, ColorParams, Colorspace, Device, Document, Matrix, NativeDevice,
+    Path, PathWalker, Rect, StrokeState, Text,
 };
 use rustler::Atom;
 use rustler::{Encoder, Env, NifMap, NifResult, Term};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+fn rect_contains_point(rect: Rect, x: f32, y: f32, expand: f32) -> bool {
+    let x0 = rect.x0.min(rect.x1) - expand;
+    let x1 = rect.x0.max(rect.x1) + expand;
+    let y0 = rect.y0.min(rect.y1) - expand;
+    let y1 = rect.y0.max(rect.y1) + expand;
+    x >= x0 && x <= x1 && y >= y0 && y <= y1
+}
+
+fn find_line_id(line_bounds: &[Rect], x: f32, y: f32) -> usize {
+    if line_bounds.is_empty() {
+        return 0;
+    }
+
+    // First try strict containment (with small tolerance).
+    for (idx, rect) in line_bounds.iter().copied().enumerate() {
+        if rect_contains_point(rect, x, y, 2.0) {
+            return idx;
+        }
+    }
+
+    // Fallback: nearest by vertical distance (keeps things stable even if x is off).
+    let mut best_idx = 0usize;
+    let mut best_dist = f32::MAX;
+    for (idx, rect) in line_bounds.iter().copied().enumerate() {
+        let y_mid = (rect.y0 + rect.y1) * 0.5;
+        let dist = (y - y_mid).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = idx;
+        }
+    }
+
+    best_idx
+}
+
+fn style_key_for_span(font_name: &str, font_size: f32, wmode_key: u32, r: f32, g: f32, b: f32) -> u64 {
+    // Quantize color to avoid floating noise while still splitting red vs blue vs other.
+    let rq = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let gq = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bq = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    let mut h = DefaultHasher::new();
+    font_name.hash(&mut h);
+    font_size.to_bits().hash(&mut h);
+    wmode_key.hash(&mut h);
+    rq.hash(&mut h);
+    gq.hash(&mut h);
+    bq.hash(&mut h);
+    h.finish()
+}
 
 // =============================================================================
 // Detection Configuration
@@ -242,8 +295,10 @@ struct ColoredChar {
     bbox_y0: f32,
     /// Actual bbox bottom (y1), estimated from font metrics
     bbox_y1: f32,
-    /// Span identifier — segments are flushed at span boundaries (matching Python behavior)
-    span_id: u64,
+    /// Line identifier derived from structured text (stext) line bounds.
+    line_id: usize,
+    /// Style key (font + size + write mode) to emulate PyMuPDF rawdict span grouping.
+    style_key: u64,
     page: usize,
     #[allow(dead_code)]
     y_flipped: bool,
@@ -363,7 +418,8 @@ struct CollectorState {
     formatting_bars: Vec<FormattingBar>,
     colored_chars: Vec<ColoredChar>,
     current_page: usize,
-    next_span_id: u64,
+    /// Line bounding boxes for the currently processed page (stext).
+    current_line_bounds: Vec<Rect>,
     config: Config,
 }
 
@@ -540,8 +596,9 @@ impl NativeDevice for RedlineCollector {
             let trm = span.trm();
             let font_ascender = font.ascender();
             let font_descender = font.descender();
-            let span_id = state.next_span_id;
-            state.next_span_id += 1;
+            let wmode_key: u32 = span.wmode().into();
+            let style_key =
+                style_key_for_span(font.name(), trm.d.abs().max(trm.a.abs()), wmode_key, r, g, b);
 
             for item in span.items() {
                 let ucs = item.ucs();
@@ -574,6 +631,7 @@ impl NativeDevice for RedlineCollector {
                 // Estimate bbox from font metrics (will be replaced by TextPage data if available)
                 let bbox_y0 = ty - char_height * font_ascender;
                 let bbox_y1 = ty - char_height * font_descender;
+                let line_id = find_line_id(&state.current_line_bounds, tx, ty);
 
                 state.colored_chars.push(ColoredChar {
                     char: ch,
@@ -583,7 +641,8 @@ impl NativeDevice for RedlineCollector {
                     height: char_height,
                     bbox_y0,
                     bbox_y1,
-                    span_id,
+                    line_id,
+                    style_key,
                     page: current_page,
                     y_flipped: ctm.d < 0.0,
                 });
@@ -656,12 +715,15 @@ fn extract_text_segments(
 ) -> Vec<TextSegment> {
     let mut segments = Vec::new();
 
-    // Process chars in their natural order (preserving span structure from device callback).
-    // Flush segments at span boundaries, matching Python's block→line→span→char iteration.
+    // Process chars in their natural order (device callback order).
+    // Flush segments on (page, line_id, style_key) changes, which approximates PyMuPDF rawdict
+    // span grouping (font/size/color within a line) better than MuPDF's text "span" callbacks
+    // which can be word-level on some PDFs.
     let mut current_text = String::new();
     let mut current_formatting: Option<&str> = None;
-    let mut current_span_id: u64 = u64::MAX;
     let mut current_page: usize = usize::MAX;
+    let mut current_line_id: usize = usize::MAX;
+    let mut current_style_key: u64 = u64::MAX;
     let mut segment_y: f32 = 0.0;
     let mut segment_x: f32 = 0.0;
     let mut segment_x_end: f32 = 0.0;
@@ -679,8 +741,8 @@ fn extract_text_segments(
         let bars_ref = page_bars.unwrap_or(&empty_bars);
         let bars_owned: Vec<FormattingBar> = bars_ref.iter().map(|b| (*b).clone()).collect();
 
-        // Flush segment on span boundary or page change
-        if ch.span_id != current_span_id || ch.page != current_page {
+        // Flush segment when moving to a new rawdict-like group.
+        if ch.page != current_page || ch.line_id != current_line_id || ch.style_key != current_style_key {
             if !current_text.is_empty() && current_formatting.is_some() {
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
@@ -696,8 +758,9 @@ fn extract_text_segments(
             }
             current_text.clear();
             current_formatting = None;
-            current_span_id = ch.span_id;
             current_page = ch.page;
+            current_line_id = ch.line_id;
+            current_style_key = ch.style_key;
         }
 
         let formatting = get_char_formatting(
@@ -753,7 +816,7 @@ fn extract_text_segments(
             segment_x = ch.x;
             segment_x_end = ch.x + ch.width;
         } else {
-            // Same formatting, same span - continue segment
+            // Same formatting - continue segment
             current_text.push(ch.char);
             segment_x_end = ch.x + ch.width;
         }
@@ -1043,7 +1106,7 @@ fn has_redlines_impl(pdf_data: &[u8], config: Config) -> Result<bool, String> {
         formatting_bars: Vec::new(),
         colored_chars: Vec::new(),
         current_page: 0,
-        next_span_id: 0,
+        current_line_bounds: Vec::new(),
         config,
     }));
 
@@ -1055,10 +1118,27 @@ fn has_redlines_impl(pdf_data: &[u8], config: Config) -> Result<bool, String> {
 
         // Clear state for new page (we only need to check one page at a time)
         {
+            let line_bounds = page
+                .to_text_page(TextPageFlags::PRESERVE_WHITESPACE)
+                .map(|tp| {
+                    let mut v = Vec::new();
+                    for block in tp.blocks() {
+                        if block.r#type() != mupdf::text_page::TextBlockType::Text {
+                            continue;
+                        }
+                        for line in block.lines() {
+                            v.push(line.bounds());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default();
+
             let mut state_ref = state.borrow_mut();
             state_ref.formatting_bars.clear();
             state_ref.colored_chars.clear();
             state_ref.current_page = page_num;
+            state_ref.current_line_bounds = line_bounds;
         }
 
         let collector = RedlineCollector::new(Rc::clone(&state));
@@ -1093,7 +1173,7 @@ fn extract_redlines_impl(pdf_data: &[u8], config: Config) -> Result<NifRedlineOu
         formatting_bars: Vec::new(),
         colored_chars: Vec::new(),
         current_page: 0,
-        next_span_id: 0,
+        current_line_bounds: Vec::new(),
         config,
     }));
 
@@ -1112,8 +1192,25 @@ fn extract_redlines_impl(pdf_data: &[u8], config: Config) -> Result<NifRedlineOu
         }
 
         {
+            let line_bounds = page
+                .to_text_page(TextPageFlags::PRESERVE_WHITESPACE)
+                .map(|tp| {
+                    let mut v = Vec::new();
+                    for block in tp.blocks() {
+                        if block.r#type() != mupdf::text_page::TextBlockType::Text {
+                            continue;
+                        }
+                        for line in block.lines() {
+                            v.push(line.bounds());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default();
+
             let mut state_ref = state.borrow_mut();
             state_ref.current_page = page_num;
+            state_ref.current_line_bounds = line_bounds;
         }
 
         let collector = RedlineCollector::new(Rc::clone(&state));
