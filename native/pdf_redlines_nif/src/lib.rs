@@ -821,10 +821,12 @@ fn extract_text_segments(
 
             // If the gap is large enough to contain intervening uncolored text,
             // flush and start a new segment. We only see colored chars, so a
-            // gap much wider than a word-space means there's uncolored content
+            // gap much wider than a few spaces means there's uncolored content
             // in between that should act as a segment boundary (matching Python
             // rawdict behavior where uncolored spans separate colored ones).
-            let intervening_text_threshold = ch.height * 0.5;
+            // Use ~5x space_width to avoid splitting within long legal phrases
+            // where PDF glyph positioning has large jumps.
+            let intervening_text_threshold = ch.height * 1.0;
             if x_gap > intervening_text_threshold && !current_text.is_empty() {
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
@@ -848,7 +850,18 @@ fn extract_text_segments(
                 // Python's rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
                 let space_threshold = ch.height * 0.2;
                 if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
-                    current_text.push(' ');
+                    // Insert 2 spaces after sentence-ending punctuation when
+                    // the gap is wide enough (~2.2x space width). This matches
+                    // Python's rawdict which preserves double spaces in legal docs.
+                    let after_period = current_text.ends_with('.')
+                        || current_text.ends_with(':');
+                    let double_space_threshold = ch.height * 0.45;
+                    if after_period && x_gap > double_space_threshold {
+                        current_text.push(' ');
+                        current_text.push(' ');
+                    } else {
+                        current_text.push(' ');
+                    }
                 }
                 current_text.push(ch.char);
                 segment_x_end = ch.x + ch.width;
