@@ -819,14 +819,24 @@ fn extract_text_segments(
             // Same formatting - continue segment.
             let x_gap = ch.x - segment_x_end;
 
-            // If the gap is large enough to contain intervening uncolored text,
-            // flush and start a new segment. We only see colored chars, so a
-            // gap much wider than a few spaces means there's uncolored content
-            // in between that should act as a segment boundary (matching Python
-            // rawdict behavior where uncolored spans separate colored ones).
-            // Use ~5x space_width to avoid splitting within long legal phrases
-            // where PDF glyph positioning has large jumps.
-            let intervening_text_threshold = ch.height * 1.0;
+            // Detect intervening uncolored text by gap size. We only see
+            // colored chars, so a gap much wider than a few spaces means
+            // there's uncolored content in between (matching Python rawdict
+            // behavior where uncolored spans separate colored ones).
+            //
+            // Adaptive threshold based on estimated space width:
+            // - Never break below 3.5x space_w (could just be wide spacing)
+            // - Use lower threshold (3.5x) after punctuation boundaries
+            //   (";", ")", "]", ".") where Python commonly splits
+            // - Use higher threshold (5x) in flowing prose to avoid
+            //   over-splitting in PDFs with large glyph positioning jumps
+            let space_w = ch.height * 0.2;
+            let ends_with_punct = current_text.ends_with(';')
+                || current_text.ends_with(')')
+                || current_text.ends_with(']')
+                || current_text.ends_with('.');
+            let break_multiplier = if ends_with_punct { 2.5 } else { 5.0 };
+            let intervening_text_threshold = space_w * break_multiplier;
             if x_gap > intervening_text_threshold && !current_text.is_empty() {
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
