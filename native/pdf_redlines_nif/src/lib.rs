@@ -834,6 +834,28 @@ fn extract_text_segments(
             // Same formatting - continue segment.
             let x_gap = ch.x - segment_x_end;
 
+            // Backward jump: next char starts well before current segment end.
+            // This happens with overlaid duplicate text elements in PDFs.
+            // Flush current segment to avoid merging separate text layers.
+            if x_gap < -ch.width * 2.0 && !current_text.is_empty() {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    segments.push(TextSegment {
+                        text,
+                        is_deletion: current_formatting == Some("strikethrough"),
+                        page,
+                        y_pos: segment_y,
+                        x_pos: segment_x,
+                        x_end: segment_x_end,
+                    });
+                }
+                current_text = ch.char.to_string();
+                segment_y = ch.y;
+                segment_x = ch.x;
+                segment_x_end = ch.x + ch.width;
+                continue;
+            }
+
             // Detect intervening uncolored text by gap size. We only see
             // colored chars, so a gap much wider than a few spaces means
             // there's uncolored content in between (matching Python rawdict
