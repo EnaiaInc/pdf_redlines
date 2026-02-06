@@ -711,8 +711,11 @@ fn get_char_formatting(
             continue;
         }
 
-        // Any x-overlap between bar and char (matching Python logic)
-        if bar.x2 < char_x0 || bar.x1 > char_x1 {
+        // Bar must cover the character's midpoint to count as formatting it.
+        // Using any-overlap allowed bars that barely touch the edge of the
+        // next character to misclassify it (off-by-one at formatting boundaries).
+        let char_mid = (char_x0 + char_x1) * 0.5;
+        if bar.x2 < char_mid || bar.x1 > char_mid {
             continue;
         }
 
