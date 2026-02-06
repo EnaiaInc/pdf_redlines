@@ -249,6 +249,9 @@ struct PageMetrics {
 rustler::atoms! {
     ok,
     error,
+    insertion,
+    deletion,
+    paired,
     red_r_min,
     red_g_max,
     red_b_max,
@@ -282,7 +285,7 @@ rustler::init!("Elixir.PDFRedlines.Native");
 
 #[derive(NifMap)]
 struct NifRedline {
-    r#type: String,
+    r#type: Atom,
     deletion: Option<String>,
     insertion: Option<String>,
     location: String,
@@ -1152,7 +1155,7 @@ fn group_segments_to_redlines(
 
     while i < sorted.len() {
         let seg = &sorted[i];
-        let mut paired = false;
+        let mut is_paired = false;
 
         if i + 1 < sorted.len() {
             let next_seg = &sorted[i + 1];
@@ -1164,27 +1167,27 @@ fn group_segments_to_redlines(
             let x_adjacent = next_seg.x_pos <= seg.x_end + config.pair_x_gap_max;
             if same_line && x_adjacent && seg.is_deletion && !next_seg.is_deletion {
                 redlines.push(NifRedline {
-                    r#type: "paired".to_string(),
+                    r#type: paired(),
                     deletion: Some(seg.text.clone()),
                     insertion: Some(next_seg.text.clone()),
                     location: format!("page {}", seg.page + 1),
                 });
                 i += 2;
-                paired = true;
+                is_paired = true;
             }
         }
 
-        if !paired {
+        if !is_paired {
             if seg.is_deletion {
                 redlines.push(NifRedline {
-                    r#type: "deletion".to_string(),
+                    r#type: deletion(),
                     deletion: Some(seg.text.clone()),
                     insertion: None,
                     location: format!("page {}", seg.page + 1),
                 });
             } else {
                 redlines.push(NifRedline {
-                    r#type: "insertion".to_string(),
+                    r#type: insertion(),
                     deletion: None,
                     insertion: Some(seg.text.clone()),
                     location: format!("page {}", seg.page + 1),
