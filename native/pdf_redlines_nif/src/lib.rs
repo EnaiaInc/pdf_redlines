@@ -9,8 +9,8 @@ use mupdf::{
 use rustler::Atom;
 use rustler::{Encoder, Env, NifMap, NifResult, Term};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -55,17 +55,21 @@ fn find_line_id(line_bounds: &[Rect], x: f32, y: f32) -> usize {
 fn strip_subset_prefix(font_name: &str) -> &str {
     let bytes = font_name.as_bytes();
     // Pattern: exactly 6 uppercase ASCII letters followed by '+'
-    if bytes.len() > 7
-        && bytes[6] == b'+'
-        && bytes[..6].iter().all(|&b| b.is_ascii_uppercase())
-    {
+    if bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|&b| b.is_ascii_uppercase()) {
         &font_name[7..]
     } else {
         font_name
     }
 }
 
-fn style_key_for_span(font_name: &str, font_size: f32, wmode_key: u32, r: f32, g: f32, b: f32) -> u64 {
+fn style_key_for_span(
+    font_name: &str,
+    font_size: f32,
+    wmode_key: u32,
+    r: f32,
+    g: f32,
+    b: f32,
+) -> u64 {
     // Quantize color to avoid floating noise while still splitting red vs blue vs other.
     let rq = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
     let gq = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -612,8 +616,14 @@ impl NativeDevice for RedlineCollector {
             let font_ascender = font.ascender();
             let font_descender = font.descender();
             let wmode_key: u32 = span.wmode().into();
-            let style_key =
-                style_key_for_span(font.name(), trm.d.abs().max(trm.a.abs()), wmode_key, r, g, b);
+            let style_key = style_key_for_span(
+                font.name(),
+                trm.d.abs().max(trm.a.abs()),
+                wmode_key,
+                r,
+                g,
+                b,
+            );
 
             for item in span.items() {
                 let ucs = item.ucs();
@@ -757,7 +767,10 @@ fn extract_text_segments(
         let bars_owned: Vec<FormattingBar> = bars_ref.iter().map(|b| (*b).clone()).collect();
 
         // Flush segment when moving to a new rawdict-like group.
-        if ch.page != current_page || ch.line_id != current_line_id || ch.style_key != current_style_key {
+        if ch.page != current_page
+            || ch.line_id != current_line_id
+            || ch.style_key != current_style_key
+        {
             if !current_text.is_empty() && current_formatting.is_some() {
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
@@ -778,14 +791,8 @@ fn extract_text_segments(
             current_style_key = ch.style_key;
         }
 
-        let formatting = get_char_formatting(
-            ch.x,
-            ch.width,
-            ch.bbox_y0,
-            ch.bbox_y1,
-            &bars_owned,
-            page,
-        );
+        let formatting =
+            get_char_formatting(ch.x, ch.width, ch.bbox_y0, ch.bbox_y1, &bars_owned, page);
 
         if formatting.is_none() {
             if !current_text.is_empty() && current_formatting.is_some() {
@@ -881,7 +888,10 @@ fn extract_text_segments(
             // uppercase, and segment already has a space (at least "First Last") —
             // likely separate names in a list separated by uncolored content
             // (e.g. "Casey Baron" then "Darren Medlock").
-            let last_is_lower = current_text.chars().last().map_or(false, |c| c.is_lowercase());
+            let last_is_lower = current_text
+                .chars()
+                .last()
+                .map_or(false, |c| c.is_lowercase());
             let next_is_upper = ch.char.is_uppercase();
             let has_space = current_text.contains(' ');
             let is_name_boundary = last_is_lower && next_is_upper && has_space;
@@ -917,12 +927,14 @@ fn extract_text_segments(
                 // space.  MuPDF device callbacks may not emit space glyphs, but
                 // Python's rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
                 let space_threshold = ch.height * 0.15;
-                if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
+                if x_gap > space_threshold
+                    && !current_text.ends_with(' ')
+                    && !ch.char.is_whitespace()
+                {
                     // Insert 2 spaces after sentence-ending punctuation when
                     // the gap is wide enough (~2.2x space width). This matches
                     // Python's rawdict which preserves double spaces in legal docs.
-                    let after_period = current_text.ends_with('.')
-                        || current_text.ends_with(':');
+                    let after_period = current_text.ends_with('.') || current_text.ends_with(':');
                     let double_space_threshold = ch.height * 0.45;
                     if after_period && x_gap > double_space_threshold {
                         current_text.push(' ');
