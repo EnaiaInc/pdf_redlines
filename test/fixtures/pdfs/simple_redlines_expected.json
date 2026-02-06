@@ -6,9 +6,8 @@
       "location": "page 1"
     },
     {
-      "type": "paired",
-      "deletion": "N",
-      "insertion": "EW",
+      "type": "insertion",
+      "insertion": "NEW",
       "location": "page 1"
     },
     {
