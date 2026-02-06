@@ -48,7 +48,8 @@ defmodule PDFRedlines.MixProject do
     [
       licenses: ["MIT"],
       links: %{
-        "GitHub" => @source_url
+        "GitHub" => @source_url,
+        "Changelog" => "https://hexdocs.pm/pdf_redlines/changelog.html"
       },
       files: [
         "lib",
@@ -58,6 +59,7 @@ defmodule PDFRedlines.MixProject do
         "checksum-*.exs",
         "mix.exs",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE"
       ]
     ]
