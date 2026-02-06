@@ -1058,8 +1058,10 @@ fn group_segments_to_redlines(
             let next_seg = &sorted[i + 1];
             let y_diff = (seg.y_pos - next_seg.y_pos).abs();
             let same_line = y_diff < config.same_line_y_tolerance && seg.page == next_seg.page;
-            let x_gap = next_seg.x_pos - seg.x_end;
-            let x_adjacent = x_gap >= 0.0 && x_gap < config.pair_x_gap_max;
+            // Match Python: next_segment.x_pos <= segment.x_end + 3
+            // Allows overlapping positions (negative gap) which occur when
+            // deletion and insertion chars share the same glyph position.
+            let x_adjacent = next_seg.x_pos <= seg.x_end + config.pair_x_gap_max;
 
             if same_line && x_adjacent && seg.is_deletion && !next_seg.is_deletion {
                 redlines.push(NifRedline {
