@@ -3,14 +3,91 @@
 //! This module provides Elixir bindings for the Rust-based redline extractor.
 
 use mupdf::{
-    ColorParams, Colorspace, Device, Document, Matrix, NativeDevice, Path, PathWalker, StrokeState,
-    Text,
+    text_page::TextPageFlags, ColorParams, Colorspace, Device, Document, Matrix, NativeDevice,
+    Path, PathWalker, Rect, StrokeState, Text,
 };
 use rustler::Atom;
 use rustler::{Encoder, Env, NifMap, NifResult, Term};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+fn rect_contains_point(rect: Rect, x: f32, y: f32, expand: f32) -> bool {
+    let x0 = rect.x0.min(rect.x1) - expand;
+    let x1 = rect.x0.max(rect.x1) + expand;
+    let y0 = rect.y0.min(rect.y1) - expand;
+    let y1 = rect.y0.max(rect.y1) + expand;
+    x >= x0 && x <= x1 && y >= y0 && y <= y1
+}
+
+fn find_line_id(line_bounds: &[Rect], x: f32, y: f32) -> usize {
+    if line_bounds.is_empty() {
+        return 0;
+    }
+
+    // First try strict containment (with small tolerance).
+    for (idx, rect) in line_bounds.iter().copied().enumerate() {
+        if rect_contains_point(rect, x, y, 2.0) {
+            return idx;
+        }
+    }
+
+    // Fallback: nearest by vertical distance (keeps things stable even if x is off).
+    let mut best_idx = 0usize;
+    let mut best_dist = f32::MAX;
+    for (idx, rect) in line_bounds.iter().copied().enumerate() {
+        let y_mid = (rect.y0 + rect.y1) * 0.5;
+        let dist = (y - y_mid).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = idx;
+        }
+    }
+
+    best_idx
+}
+
+/// Strip the 6-char random subset prefix from embedded font names (e.g. "UFLVUZ+TimesNewRomanPSMT"
+/// → "TimesNewRomanPSMT"). Different subsets of the same font get different prefixes but are
+/// logically identical. PyMuPDF's rawdict normalizes these; we must too.
+fn strip_subset_prefix(font_name: &str) -> &str {
+    let bytes = font_name.as_bytes();
+    // Pattern: exactly 6 uppercase ASCII letters followed by '+'
+    if bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|&b| b.is_ascii_uppercase()) {
+        &font_name[7..]
+    } else {
+        font_name
+    }
+}
+
+fn style_key_for_span(
+    font_name: &str,
+    font_size: f32,
+    wmode_key: u32,
+    r: f32,
+    g: f32,
+    b: f32,
+) -> u64 {
+    // Quantize color to avoid floating noise while still splitting red vs blue vs other.
+    let rq = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let gq = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bq = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // Quantize font_size to 0.1pt to avoid float noise across text operations.
+    let size_q = (font_size * 10.0).round() as u32;
+    // Strip subset prefix so different subsets of the same font hash identically.
+    let base_name = strip_subset_prefix(font_name);
+
+    let mut h = DefaultHasher::new();
+    base_name.hash(&mut h);
+    size_q.hash(&mut h);
+    wmode_key.hash(&mut h);
+    rq.hash(&mut h);
+    gq.hash(&mut h);
+    bq.hash(&mut h);
+    h.finish()
+}
 
 // =============================================================================
 // Detection Configuration
@@ -53,18 +130,18 @@ impl Default for Config {
             blue_b_min: 0.5,
             formatting_bar_height_max: 2.0,
             formatting_bar_width_min: 3.0,
-            line_bar_height_max: 3.0,
-            line_bar_width_min: 5.0,
+            line_bar_height_max: 2.0,
+            line_bar_width_min: 3.0,
             stroke_line_y_tolerance: 2.0,
             stroke_line_width_min: 3.0,
             line_break_height_ratio: 0.5,
-            same_line_y_tolerance: 3.0,
+            same_line_y_tolerance: 2.0,
             merge_x_gap_max: 30.0,
             merge_line_height_min_ratio: 0.8,
             merge_line_height_max_ratio: 1.8,
             margin_end_ratio: 0.25,
             margin_start_ratio: 0.1,
-            pair_x_gap_max: 200.0,
+            pair_x_gap_max: 1.5,
             page_width_fallback: 600.0,
             line_height_fallback: 15.0,
         }
@@ -159,6 +236,7 @@ fn config_from_term(term: Term) -> Config {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct PageMetrics {
     line_height: f32,
     page_width: f32,
@@ -191,6 +269,7 @@ rustler::atoms! {
     margin_end_ratio,
     margin_start_ratio,
     pair_x_gap_max,
+
     page_width_fallback,
     line_height_fallback,
 }
@@ -237,6 +316,14 @@ struct ColoredChar {
     y: f32,
     width: f32,
     height: f32,
+    /// Actual bbox top (y0), estimated from font metrics
+    bbox_y0: f32,
+    /// Actual bbox bottom (y1), estimated from font metrics
+    bbox_y1: f32,
+    /// Line identifier derived from structured text (stext) line bounds.
+    line_id: usize,
+    /// Style key (font + size + write mode) to emulate PyMuPDF rawdict span grouping.
+    style_key: u64,
     page: usize,
     #[allow(dead_code)]
     y_flipped: bool,
@@ -269,26 +356,19 @@ fn is_redline_color(r: f32, g: f32, b: f32, config: Config) -> bool {
     is_red_color(r, g, b, config) || is_blue_color(r, g, b, config)
 }
 
-fn extract_rgb(color: &[f32], colorspace: &Colorspace) -> Option<(f32, f32, f32)> {
-    // Handle DeviceRGB (3 components)
-    if colorspace.n() == 3 && color.len() >= 3 {
+fn extract_rgb(color: &[f32], colorspace: &Colorspace, cp: ColorParams) -> Option<(f32, f32, f32)> {
+    // Fast path: already RGB
+    if colorspace.is_rgb() && color.len() >= 3 {
         return Some((color[0], color[1], color[2]));
     }
-    // Handle DeviceCMYK - convert to RGB
-    if colorspace.n() == 4 && color.len() >= 4 {
-        let c = color[0];
-        let m = color[1];
-        let y = color[2];
-        let k = color[3];
-        let r = (1.0 - c) * (1.0 - k);
-        let g = (1.0 - m) * (1.0 - k);
-        let b = (1.0 - y) * (1.0 - k);
-        return Some((r, g, b));
-    }
-    // DeviceGray - gray to RGB
-    if colorspace.n() == 1 && !color.is_empty() {
-        let gray = color[0];
-        return Some((gray, gray, gray));
+    // Use MuPDF's proper color conversion (handles ICC profiles, CMYK, Gray, etc.)
+    let n = colorspace.n() as usize;
+    if color.len() >= n {
+        if let Ok(rgb) = colorspace.convert_color(color, &Colorspace::device_rgb(), None, cp) {
+            if rgb.len() >= 3 {
+                return Some((rgb[0], rgb[1], rgb[2]));
+            }
+        }
     }
     None
 }
@@ -356,6 +436,8 @@ struct CollectorState {
     formatting_bars: Vec<FormattingBar>,
     colored_chars: Vec<ColoredChar>,
     current_page: usize,
+    /// Line bounding boxes for the currently processed page (stext).
+    current_line_bounds: Vec<Rect>,
     config: Config,
 }
 
@@ -378,9 +460,9 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
@@ -464,13 +546,14 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
         let config = self.state.borrow().config;
+
         if !is_redline_color(r, g, b, config) {
             return;
         }
@@ -513,9 +596,9 @@ impl NativeDevice for RedlineCollector {
         color_space: &Colorspace,
         color: &[f32],
         _alpha: f32,
-        _cp: ColorParams,
+        cp: ColorParams,
     ) {
-        let Some((r, g, b)) = extract_rgb(color, color_space) else {
+        let Some((r, g, b)) = extract_rgb(color, color_space, cp) else {
             return;
         };
 
@@ -530,6 +613,17 @@ impl NativeDevice for RedlineCollector {
         for span in text.spans() {
             let font = span.font();
             let trm = span.trm();
+            let font_ascender = font.ascender();
+            let font_descender = font.descender();
+            let wmode_key: u32 = span.wmode().into();
+            let style_key = style_key_for_span(
+                font.name(),
+                trm.d.abs().max(trm.a.abs()),
+                wmode_key,
+                r,
+                g,
+                b,
+            );
 
             for item in span.items() {
                 let ucs = item.ucs();
@@ -559,12 +653,21 @@ impl NativeDevice for RedlineCollector {
                     char_width
                 };
 
+                // Estimate bbox from font metrics (will be replaced by TextPage data if available)
+                let bbox_y0 = ty - char_height * font_ascender;
+                let bbox_y1 = ty - char_height * font_descender;
+                let line_id = find_line_id(&state.current_line_bounds, tx, ty);
+
                 state.colored_chars.push(ColoredChar {
                     char: ch,
                     x: tx,
                     y: ty,
                     width,
                     height: char_height,
+                    bbox_y0,
+                    bbox_y1,
+                    line_id,
+                    style_key,
                     page: current_page,
                     y_flipped: ctm.d < 0.0,
                 });
@@ -579,18 +682,17 @@ impl NativeDevice for RedlineCollector {
 
 fn get_char_formatting(
     char_x: f32,
-    char_y: f32,
     char_width: f32,
-    char_height: f32,
+    bbox_y0: f32,
+    bbox_y1: f32,
     bars: &[FormattingBar],
     page: usize,
 ) -> Option<&'static str> {
-    let char_mid_x = char_x + char_width / 2.0;
+    let char_x0 = char_x;
+    let char_x1 = char_x + char_width;
 
-    let ascender_ratio = 0.8;
-    let descender_ratio = 0.2;
-    let y0 = char_y - char_height * ascender_ratio;
-    let y1 = char_y + char_height * descender_ratio;
+    let y0 = bbox_y0;
+    let y1 = bbox_y1;
     let text_height = y1 - y0;
 
     let strikethrough_zone_min = y0 + text_height * 0.2;
@@ -606,7 +708,8 @@ fn get_char_formatting(
             continue;
         }
 
-        if !(bar.x1 <= char_mid_x && char_mid_x <= bar.x2) {
+        // Any x-overlap between bar and char (matching Python logic)
+        if bar.x2 < char_x0 || bar.x1 > char_x1 {
             continue;
         }
 
@@ -633,71 +736,115 @@ fn get_char_formatting(
 fn extract_text_segments(
     colored_chars: &[ColoredChar],
     formatting_bars: &[FormattingBar],
-    config: Config,
+    _config: Config,
 ) -> Vec<TextSegment> {
     let mut segments = Vec::new();
 
-    let mut chars_by_page: std::collections::HashMap<usize, Vec<&ColoredChar>> =
-        std::collections::HashMap::new();
-    for ch in colored_chars {
-        chars_by_page.entry(ch.page).or_default().push(ch);
+    // Process chars in their natural order (device callback order).
+    // Flush segments on (page, line_id, style_key) changes, which approximates PyMuPDF rawdict
+    // span grouping (font/size/color within a line) better than MuPDF's text "span" callbacks
+    // which can be word-level on some PDFs.
+    let mut current_text = String::new();
+    let mut current_formatting: Option<&str> = None;
+    let mut current_page: usize = usize::MAX;
+    let mut current_line_id: usize = usize::MAX;
+    let mut current_style_key: u64 = u64::MAX;
+    let mut segment_y: f32 = 0.0;
+    let mut segment_x: f32 = 0.0;
+    let mut segment_x_end: f32 = 0.0;
+
+    // Pre-collect bars by page for efficient lookup
+    let mut bars_by_page: HashMap<usize, Vec<&FormattingBar>> = HashMap::new();
+    for bar in formatting_bars {
+        bars_by_page.entry(bar.page).or_default().push(bar);
     }
 
-    for (page, mut chars) in chars_by_page {
-        chars.sort_by(|a, b| {
-            let y_cmp = a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal);
-            if y_cmp == std::cmp::Ordering::Equal {
-                a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                y_cmp
-            }
-        });
+    for ch in colored_chars {
+        let page = ch.page;
+        let page_bars = bars_by_page.get(&page);
+        let empty_bars: Vec<&FormattingBar> = Vec::new();
+        let bars_ref = page_bars.unwrap_or(&empty_bars);
+        let bars_owned: Vec<FormattingBar> = bars_ref.iter().map(|b| (*b).clone()).collect();
 
-        let page_bars: Vec<_> = formatting_bars.iter().filter(|b| b.page == page).collect();
-
-        let mut current_text = String::new();
-        let mut current_formatting: Option<&str> = None;
-        let mut segment_y: f32 = 0.0;
-        let mut segment_x: f32 = 0.0;
-        let mut segment_x_end: f32 = 0.0;
-
-        for ch in chars {
-            let formatting = get_char_formatting(
-                ch.x,
-                ch.y,
-                ch.width,
-                ch.height,
-                &page_bars.iter().copied().cloned().collect::<Vec<_>>(),
-                page,
-            );
-
-            if formatting.is_none() {
-                if !current_text.is_empty() && current_formatting.is_some() {
-                    let text = current_text.trim().to_string();
-                    if !text.is_empty() {
-                        segments.push(TextSegment {
-                            text,
-                            is_deletion: current_formatting == Some("strikethrough"),
-                            page,
-                            y_pos: segment_y,
-                            x_pos: segment_x,
-                            x_end: segment_x_end,
-                        });
-                    }
+        // Flush segment when moving to a new rawdict-like group.
+        if ch.page != current_page
+            || ch.line_id != current_line_id
+            || ch.style_key != current_style_key
+        {
+            if !current_text.is_empty() && current_formatting.is_some() {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    segments.push(TextSegment {
+                        text,
+                        is_deletion: current_formatting == Some("strikethrough"),
+                        page: current_page,
+                        y_pos: segment_y,
+                        x_pos: segment_x,
+                        x_end: segment_x_end,
+                    });
                 }
-                current_text.clear();
-                current_formatting = None;
-                continue;
             }
+            current_text.clear();
+            current_formatting = None;
+            current_page = ch.page;
+            current_line_id = ch.line_id;
+            current_style_key = ch.style_key;
+        }
 
-            if current_formatting.is_none() {
-                current_formatting = formatting;
-                segment_y = ch.y;
-                segment_x = ch.x;
-                segment_x_end = ch.x + ch.width;
-                current_text.push(ch.char);
-            } else if formatting != current_formatting {
-                // Formatting changed - flush segment
+        let formatting =
+            get_char_formatting(ch.x, ch.width, ch.bbox_y0, ch.bbox_y1, &bars_owned, page);
+
+        if formatting.is_none() {
+            if !current_text.is_empty() && current_formatting.is_some() {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    segments.push(TextSegment {
+                        text,
+                        is_deletion: current_formatting == Some("strikethrough"),
+                        page,
+                        y_pos: segment_y,
+                        x_pos: segment_x,
+                        x_end: segment_x_end,
+                    });
+                }
+            }
+            current_text.clear();
+            current_formatting = None;
+            continue;
+        }
+
+        if current_formatting.is_none() {
+            current_formatting = formatting;
+            segment_y = ch.y;
+            segment_x = ch.x;
+            segment_x_end = ch.x + ch.width;
+            current_text.push(ch.char);
+        } else if formatting != current_formatting {
+            // Formatting changed - flush segment
+            let text = current_text.trim().to_string();
+            if !text.is_empty() {
+                segments.push(TextSegment {
+                    text,
+                    is_deletion: current_formatting == Some("strikethrough"),
+                    page,
+                    y_pos: segment_y,
+                    x_pos: segment_x,
+                    x_end: segment_x_end,
+                });
+            }
+            current_text = ch.char.to_string();
+            current_formatting = formatting;
+            segment_y = ch.y;
+            segment_x = ch.x;
+            segment_x_end = ch.x + ch.width;
+        } else {
+            // Same formatting - continue segment.
+            let x_gap = ch.x - segment_x_end;
+
+            // Backward jump: next char starts well before current segment end.
+            // This happens with overlaid duplicate text elements in PDFs.
+            // Flush current segment to avoid merging separate text layers.
+            if x_gap < -ch.width * 2.0 && !current_text.is_empty() {
                 let text = current_text.trim().to_string();
                 if !text.is_empty() {
                     segments.push(TextSegment {
@@ -710,52 +857,110 @@ fn extract_text_segments(
                     });
                 }
                 current_text = ch.char.to_string();
-                current_formatting = formatting;
+                segment_y = ch.y;
+                segment_x = ch.x;
+                segment_x_end = ch.x + ch.width;
+                continue;
+            }
+
+            // Detect intervening uncolored text by gap size. We only see
+            // colored chars, so a gap much wider than a few spaces means
+            // there's uncolored content in between (matching Python rawdict
+            // behavior where uncolored spans separate colored ones).
+            //
+            // Adaptive threshold based on estimated space width:
+            // - Token mode (2.3x): current segment contains '@' (email/URL),
+            //   where table layouts often separate items with unseen whitespace
+            // - Punctuation mode (2.5x): after ";", ")", "]", "."
+            // - Prose mode (5.0x): flowing text, high threshold to avoid
+            //   over-splitting in PDFs with large glyph positioning jumps
+            let space_w = ch.height * 0.2;
+            let ends_with_punct = current_text.ends_with(';')
+                || current_text.ends_with(',')
+                || current_text.ends_with(')')
+                || current_text.ends_with(']')
+                || current_text.ends_with('.');
+            // Token mode: emails/URLs use a lower break threshold because
+            // table layouts often place them side-by-side separated by
+            // uncolored whitespace the device never sees.
+            let is_token = current_text.contains('@');
+            // Name boundary: current segment ends lowercase, next char is
+            // uppercase, and segment already has a space (at least "First Last") —
+            // likely separate names in a list separated by uncolored content
+            // (e.g. "Casey Baron" then "Darren Medlock").
+            let last_is_lower = current_text
+                .chars()
+                .last()
+                .map_or(false, |c| c.is_lowercase());
+            let next_is_upper = ch.char.is_uppercase();
+            let has_space = current_text.contains(' ');
+            let is_name_boundary = last_is_lower && next_is_upper && has_space;
+            let break_multiplier = if is_token {
+                2.3
+            } else if is_name_boundary {
+                3.2
+            } else if ends_with_punct {
+                2.5
+            } else {
+                5.0
+            };
+            let intervening_text_threshold = space_w * break_multiplier;
+            if x_gap > intervening_text_threshold && !current_text.is_empty() {
+                let text = current_text.trim().to_string();
+                if !text.is_empty() {
+                    segments.push(TextSegment {
+                        text,
+                        is_deletion: current_formatting == Some("strikethrough"),
+                        page,
+                        y_pos: segment_y,
+                        x_pos: segment_x,
+                        x_end: segment_x_end,
+                    });
+                }
+                current_text = ch.char.to_string();
                 segment_y = ch.y;
                 segment_x = ch.x;
                 segment_x_end = ch.x + ch.width;
             } else {
-                // Same formatting - check for line break (Y coordinate change > threshold)
-                let y_diff = (ch.y - segment_y).abs();
-                let line_break_threshold = ch.height * config.line_break_height_ratio;
-
-                if y_diff > line_break_threshold {
-                    // New line - flush current segment and start new one
-                    let text = current_text.trim().to_string();
-                    if !text.is_empty() {
-                        segments.push(TextSegment {
-                            text,
-                            is_deletion: current_formatting == Some("strikethrough"),
-                            page,
-                            y_pos: segment_y,
-                            x_pos: segment_x,
-                            x_end: segment_x_end,
-                        });
+                // Synthesize spaces by geometry: if the next glyph starts far
+                // enough to the right of the previous glyph's end, insert a
+                // space.  MuPDF device callbacks may not emit space glyphs, but
+                // Python's rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
+                let space_threshold = ch.height * 0.15;
+                if x_gap > space_threshold
+                    && !current_text.ends_with(' ')
+                    && !ch.char.is_whitespace()
+                {
+                    // Insert 2 spaces after sentence-ending punctuation when
+                    // the gap is wide enough (~2.2x space width). This matches
+                    // Python's rawdict which preserves double spaces in legal docs.
+                    let after_period = current_text.ends_with('.') || current_text.ends_with(':');
+                    let double_space_threshold = ch.height * 0.45;
+                    if after_period && x_gap > double_space_threshold {
+                        current_text.push(' ');
+                        current_text.push(' ');
+                    } else {
+                        current_text.push(' ');
                     }
-                    current_text = ch.char.to_string();
-                    segment_y = ch.y;
-                    segment_x = ch.x;
-                    segment_x_end = ch.x + ch.width;
-                } else {
-                    // Same line - continue segment
-                    current_text.push(ch.char);
-                    segment_x_end = ch.x + ch.width;
                 }
+                current_text.push(ch.char);
+                segment_x_end = ch.x + ch.width;
             }
         }
+    }
 
-        if !current_text.is_empty() && current_formatting.is_some() {
-            let text = current_text.trim().to_string();
-            if !text.is_empty() {
-                segments.push(TextSegment {
-                    text,
-                    is_deletion: current_formatting == Some("strikethrough"),
-                    page,
-                    y_pos: segment_y,
-                    x_pos: segment_x,
-                    x_end: segment_x_end,
-                });
-            }
+    // Flush final segment
+    if !current_text.is_empty() && current_formatting.is_some() {
+        let text = current_text.trim().to_string();
+        if !text.is_empty() {
+            segments.push(TextSegment {
+                text,
+                is_deletion: current_formatting == Some("strikethrough"),
+                page: current_page,
+                y_pos: segment_y,
+                x_pos: segment_x,
+                x_end: segment_x_end,
+            });
         }
     }
 
@@ -806,6 +1011,7 @@ fn compute_page_metrics(
     metrics
 }
 
+#[allow(dead_code)]
 fn merge_multiline_segments(
     segments: Vec<TextSegment>,
     page_metrics: &HashMap<usize, PageMetrics>,
@@ -908,15 +1114,15 @@ fn merge_multiline_segments(
 
 fn group_segments_to_redlines(
     segments: Vec<TextSegment>,
-    page_metrics: &HashMap<usize, PageMetrics>,
+    _page_metrics: &HashMap<usize, PageMetrics>,
     config: Config,
 ) -> Vec<NifRedline> {
     if segments.is_empty() {
         return Vec::new();
     }
 
-    let merged = merge_multiline_segments(segments, page_metrics, config);
-    let mut sorted = merged;
+    // Skip multi-line merging to match Python behavior (Python does not merge across lines)
+    let mut sorted = segments;
     sorted.sort_by(|a, b| {
         let page_cmp = a.page.cmp(&b.page);
         if page_cmp != std::cmp::Ordering::Equal {
@@ -929,9 +1135,16 @@ fn group_segments_to_redlines(
         if y_cmp != std::cmp::Ordering::Equal {
             return y_cmp;
         }
-        a.x_pos
+        let x_cmp = a
+            .x_pos
             .partial_cmp(&b.x_pos)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if x_cmp != std::cmp::Ordering::Equal {
+            return x_cmp;
+        }
+        // Tie-break: deletions before insertions at the same position,
+        // so the "deletion followed by insertion" pairing assumption holds.
+        b.is_deletion.cmp(&a.is_deletion)
     });
 
     let mut redlines = Vec::new();
@@ -945,23 +1158,15 @@ fn group_segments_to_redlines(
             let next_seg = &sorted[i + 1];
             let y_diff = (seg.y_pos - next_seg.y_pos).abs();
             let same_line = y_diff < config.same_line_y_tolerance && seg.page == next_seg.page;
-            let x_gap = next_seg.x_pos - seg.x_pos;
-            let x_adjacent = x_gap > 0.0 && x_gap < config.pair_x_gap_max;
-
+            // Match Python: next_segment.x_pos <= segment.x_end + 3
+            // Allows overlapping positions (negative gap) which occur when
+            // deletion and insertion chars share the same glyph position.
+            let x_adjacent = next_seg.x_pos <= seg.x_end + config.pair_x_gap_max;
             if same_line && x_adjacent && seg.is_deletion && !next_seg.is_deletion {
                 redlines.push(NifRedline {
                     r#type: "paired".to_string(),
                     deletion: Some(seg.text.clone()),
                     insertion: Some(next_seg.text.clone()),
-                    location: format!("page {}", seg.page + 1),
-                });
-                i += 2;
-                paired = true;
-            } else if same_line && x_adjacent && !seg.is_deletion && next_seg.is_deletion {
-                redlines.push(NifRedline {
-                    r#type: "paired".to_string(),
-                    deletion: Some(next_seg.text.clone()),
-                    insertion: Some(seg.text.clone()),
                     location: format!("page {}", seg.page + 1),
                 });
                 i += 2;
@@ -1012,9 +1217,9 @@ fn page_has_redlines(
     for ch in colored_chars.iter().filter(|c| c.page == page) {
         let formatting = get_char_formatting(
             ch.x,
-            ch.y,
             ch.width,
-            ch.height,
+            ch.bbox_y0,
+            ch.bbox_y1,
             &page_bars.iter().copied().cloned().collect::<Vec<_>>(),
             page,
         );
@@ -1036,6 +1241,7 @@ fn has_redlines_impl(pdf_data: &[u8], config: Config) -> Result<bool, String> {
         formatting_bars: Vec::new(),
         colored_chars: Vec::new(),
         current_page: 0,
+        current_line_bounds: Vec::new(),
         config,
     }));
 
@@ -1047,10 +1253,27 @@ fn has_redlines_impl(pdf_data: &[u8], config: Config) -> Result<bool, String> {
 
         // Clear state for new page (we only need to check one page at a time)
         {
+            let line_bounds = page
+                .to_text_page(TextPageFlags::PRESERVE_WHITESPACE)
+                .map(|tp| {
+                    let mut v = Vec::new();
+                    for block in tp.blocks() {
+                        if block.r#type() != mupdf::text_page::TextBlockType::Text {
+                            continue;
+                        }
+                        for line in block.lines() {
+                            v.push(line.bounds());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default();
+
             let mut state_ref = state.borrow_mut();
             state_ref.formatting_bars.clear();
             state_ref.colored_chars.clear();
             state_ref.current_page = page_num;
+            state_ref.current_line_bounds = line_bounds;
         }
 
         let collector = RedlineCollector::new(Rc::clone(&state));
@@ -1085,6 +1308,7 @@ fn extract_redlines_impl(pdf_data: &[u8], config: Config) -> Result<NifRedlineOu
         formatting_bars: Vec::new(),
         colored_chars: Vec::new(),
         current_page: 0,
+        current_line_bounds: Vec::new(),
         config,
     }));
 
@@ -1103,8 +1327,25 @@ fn extract_redlines_impl(pdf_data: &[u8], config: Config) -> Result<NifRedlineOu
         }
 
         {
+            let line_bounds = page
+                .to_text_page(TextPageFlags::PRESERVE_WHITESPACE)
+                .map(|tp| {
+                    let mut v = Vec::new();
+                    for block in tp.blocks() {
+                        if block.r#type() != mupdf::text_page::TextBlockType::Text {
+                            continue;
+                        }
+                        for line in block.lines() {
+                            v.push(line.bounds());
+                        }
+                    }
+                    v
+                })
+                .unwrap_or_default();
+
             let mut state_ref = state.borrow_mut();
             state_ref.current_page = page_num;
+            state_ref.current_line_bounds = line_bounds;
         }
 
         let collector = RedlineCollector::new(Rc::clone(&state));
