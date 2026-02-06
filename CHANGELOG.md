@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- Fix off-by-one at formatting boundaries where the first character of an insertion was misclassified as part of the preceding deletion
+
 ## 0.6.1
 
 - Redline `type` field now returns atoms (`:insertion`, `:deletion`, `:paired`) instead of strings
