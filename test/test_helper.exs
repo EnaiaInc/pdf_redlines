@@ -5,6 +5,4 @@ exclude =
     [:pdf_redlines_parity]
   end
 
-Code.require_file(Path.expand("support/python_redline_extractor.ex", __DIR__))
-
 ExUnit.start(exclude: exclude)
