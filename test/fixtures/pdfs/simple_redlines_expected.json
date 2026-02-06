@@ -1,9 +1,14 @@
 {
   "redlines": [
     {
-      "type": "paired",
+      "type": "deletion",
       "deletion": "OLD",
-      "insertion": "NEW",
+      "location": "page 1"
+    },
+    {
+      "type": "paired",
+      "deletion": "N",
+      "insertion": "EW",
       "location": "page 1"
     },
     {
