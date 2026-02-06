@@ -49,15 +49,35 @@ fn find_line_id(line_bounds: &[Rect], x: f32, y: f32) -> usize {
     best_idx
 }
 
+/// Strip the 6-char random subset prefix from embedded font names (e.g. "UFLVUZ+TimesNewRomanPSMT"
+/// → "TimesNewRomanPSMT"). Different subsets of the same font get different prefixes but are
+/// logically identical. PyMuPDF's rawdict normalizes these; we must too.
+fn strip_subset_prefix(font_name: &str) -> &str {
+    let bytes = font_name.as_bytes();
+    // Pattern: exactly 6 uppercase ASCII letters followed by '+'
+    if bytes.len() > 7
+        && bytes[6] == b'+'
+        && bytes[..6].iter().all(|&b| b.is_ascii_uppercase())
+    {
+        &font_name[7..]
+    } else {
+        font_name
+    }
+}
+
 fn style_key_for_span(font_name: &str, font_size: f32, wmode_key: u32, r: f32, g: f32, b: f32) -> u64 {
     // Quantize color to avoid floating noise while still splitting red vs blue vs other.
     let rq = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
     let gq = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
     let bq = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // Quantize font_size to 0.1pt to avoid float noise across text operations.
+    let size_q = (font_size * 10.0).round() as u32;
+    // Strip subset prefix so different subsets of the same font hash identically.
+    let base_name = strip_subset_prefix(font_name);
 
     let mut h = DefaultHasher::new();
-    font_name.hash(&mut h);
-    font_size.to_bits().hash(&mut h);
+    base_name.hash(&mut h);
+    size_q.hash(&mut h);
     wmode_key.hash(&mut h);
     rq.hash(&mut h);
     gq.hash(&mut h);
