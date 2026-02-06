@@ -854,8 +854,18 @@ fn extract_text_segments(
             // table layouts often place them side-by-side separated by
             // uncolored whitespace the device never sees.
             let is_token = current_text.contains('@');
+            // Name boundary: current segment ends lowercase, next char is
+            // uppercase, and segment already has a space (at least "First Last") —
+            // likely separate names in a list separated by uncolored content
+            // (e.g. "Casey Baron" then "Darren Medlock").
+            let last_is_lower = current_text.chars().last().map_or(false, |c| c.is_lowercase());
+            let next_is_upper = ch.char.is_uppercase();
+            let has_space = current_text.contains(' ');
+            let is_name_boundary = last_is_lower && next_is_upper && has_space;
             let break_multiplier = if is_token {
                 2.3
+            } else if is_name_boundary {
+                3.2
             } else if ends_with_punct {
                 2.5
             } else {
