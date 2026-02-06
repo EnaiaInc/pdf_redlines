@@ -816,7 +816,16 @@ fn extract_text_segments(
             segment_x = ch.x;
             segment_x_end = ch.x + ch.width;
         } else {
-            // Same formatting - continue segment
+            // Same formatting - continue segment.
+            // Synthesize spaces by geometry: if the next glyph starts far enough
+            // to the right of the previous glyph's end, insert a space.
+            // MuPDF device callbacks may not emit space glyphs, but Python's
+            // rawdict (with TEXT_PRESERVE_WHITESPACE) includes them.
+            let x_gap = ch.x - segment_x_end;
+            let space_threshold = ch.height * 0.2; // ~font_size * 0.2
+            if x_gap > space_threshold && !current_text.ends_with(' ') && !ch.char.is_whitespace() {
+                current_text.push(' ');
+            }
             current_text.push(ch.char);
             segment_x_end = ch.x + ch.width;
         }
