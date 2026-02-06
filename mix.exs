@@ -69,7 +69,8 @@ defmodule PDFRedlines.MixProject do
     [
       main: "PDFRedlines",
       source_url: @source_url,
-      source_ref: "v#{@version}"
+      source_ref: "v#{@version}",
+      extras: ["CHANGELOG.md"]
     ]
   end
 
