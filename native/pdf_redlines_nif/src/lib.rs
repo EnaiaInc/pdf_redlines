@@ -117,7 +117,7 @@ impl Default for Config {
             merge_line_height_max_ratio: 1.8,
             margin_end_ratio: 0.25,
             margin_start_ratio: 0.1,
-            pair_x_gap_max: 5.0,
+            pair_x_gap_max: 3.0,
             page_width_fallback: 600.0,
             line_height_fallback: 15.0,
         }
@@ -1042,9 +1042,16 @@ fn group_segments_to_redlines(
         if y_cmp != std::cmp::Ordering::Equal {
             return y_cmp;
         }
-        a.x_pos
+        let x_cmp = a
+            .x_pos
             .partial_cmp(&b.x_pos)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if x_cmp != std::cmp::Ordering::Equal {
+            return x_cmp;
+        }
+        // Tie-break: deletions before insertions at the same position,
+        // so the "deletion followed by insertion" pairing assumption holds.
+        b.is_deletion.cmp(&a.is_deletion)
     });
 
     let mut redlines = Vec::new();
