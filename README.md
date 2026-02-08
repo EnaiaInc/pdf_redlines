@@ -1,14 +1,16 @@
+[![Hex.pm](https://img.shields.io/hexpm/v/pdf_redlines)](https://hex.pm/packages/pdf_redlines)
+[![Hexdocs.pm](https://img.shields.io/badge/docs-hexdocs.pm-purple)](https://hexdocs.pm/pdf_redlines)
+[![Github.com](https://github.com/EnaiaInc/pdf_redlines/actions/workflows/ci.yml/badge.svg)](https://github.com/EnaiaInc/pdf_redlines/actions)
+
 # PDFRedlines
 
-Fast PDF redline detection and extraction via a Rust NIF (MuPDF).
+Fast PDF redline extraction via a Rust NIF (MuPDF).
 
 ## Usage
 
 ```elixir
 {:ok, result} = PDFRedlines.extract_redlines("/path/to/document.pdf")
 # %PDFRedlines.Result{redlines: [%PDFRedlines.Redline{...}, ...]}
-
-{:ok, true} = PDFRedlines.has_redlines?("/path/to/document.pdf")
 ```
 
 ## What Are Redlines?
@@ -81,6 +83,19 @@ TEST_PDF_REDLINES_PARITY=true mix test test/redlines_parity_test.exs
 ```
 
 Inputs are read from `PDF_REDLINES_TEST_DIR` (defaults to `test/fixtures/pdfs`).
+
+## Performance
+
+Extraction runs entirely in a Rust NIF on a dirty scheduler. Benchmarked on
+real-world documents (M1 Mac):
+
+| Document                    | Size  | Time    |
+| --------------------------- | ----- | ------- |
+| 35 MB scanned PDF           | 35 MB | ~350 ms |
+| 33 MB scanned/OCR'd PDF     | 33 MB | ~640 ms |
+| 12 MB PDF with 362 redlines | 12 MB | ~130 ms |
+
+Even the worst case (large scanned documents) finishes under 700 ms.
 
 ## Benchmarks
 

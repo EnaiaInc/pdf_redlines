@@ -28,25 +28,9 @@ defmodule PDFRedlines.Native do
     nif_extract_redlines_from_binary(pdf_binary, opts)
   end
 
-  @spec has_redlines?(Path.t(), map()) :: {:ok, boolean()} | {:error, term()}
-  def has_redlines?(pdf_path, opts) when is_binary(pdf_path) and is_map(opts) do
-    nif_has_redlines_from_path(pdf_path, opts)
-  end
-
-  @spec has_redlines_from_binary?(binary(), map()) :: {:ok, boolean()} | {:error, term()}
-  def has_redlines_from_binary?(pdf_binary, opts) when is_binary(pdf_binary) and is_map(opts) do
-    nif_has_redlines_from_binary(pdf_binary, opts)
-  end
-
   @doc false
   def nif_extract_redlines_from_path(_path, _opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc false
   def nif_extract_redlines_from_binary(_binary, _opts), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  def nif_has_redlines_from_path(_path, _opts), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc false
-  def nif_has_redlines_from_binary(_binary, _opts), do: :erlang.nif_error(:nif_not_loaded)
 end

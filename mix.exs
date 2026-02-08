@@ -1,7 +1,7 @@
 defmodule PDFRedlines.MixProject do
   use Mix.Project
 
-  @version "0.6.3"
+  @version "0.7.0"
   @source_url "https://github.com/EnaiaInc/pdf_redlines"
 
   def project do
@@ -41,7 +41,7 @@ defmodule PDFRedlines.MixProject do
   end
 
   defp description do
-    "Fast PDF redline detection and extraction via a Rust NIF (MuPDF)."
+    "Fast PDF redline extraction via a Rust NIF (MuPDF)."
   end
 
   defp package do

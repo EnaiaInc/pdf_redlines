@@ -1,6 +1,6 @@
 defmodule PDFRedlines do
   @moduledoc """
-  Fast PDF redline detection and extraction via a Rust NIF (MuPDF).
+  Fast PDF redline extraction via a Rust NIF (MuPDF).
 
   This module wraps the native NIF results into Elixir structs for
   a stable public API.
@@ -85,23 +85,6 @@ defmodule PDFRedlines do
     with {:ok, %{redlines: redlines}} <- Native.extract_redlines_from_binary(pdf_binary, opts) do
       {:ok, %Result{redlines: Enum.map(redlines, &to_redline/1)}}
     end
-  end
-
-  @doc """
-  Check if a PDF file contains redlines.
-  """
-  @spec has_redlines?(Path.t(), keyword() | map()) :: {:ok, boolean()} | {:error, term()}
-  def has_redlines?(pdf_path, opts \\ []) when is_binary(pdf_path) do
-    Native.has_redlines?(pdf_path, normalize_opts(opts))
-  end
-
-  @doc """
-  Check if PDF binary content contains redlines.
-  """
-  @spec has_redlines_from_binary?(binary(), keyword() | map()) ::
-          {:ok, boolean()} | {:error, term()}
-  def has_redlines_from_binary?(pdf_binary, opts \\ []) when is_binary(pdf_binary) do
-    Native.has_redlines_from_binary?(pdf_binary, normalize_opts(opts))
   end
 
   defp to_redline(%{type: type} = redline) do
