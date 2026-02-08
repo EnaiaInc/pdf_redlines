@@ -1,6 +1,6 @@
 defmodule Mix.Tasks.PdfRedlines.Bench do
   @moduledoc """
-  Benchmark PDF redline extraction and detection.
+  Benchmark PDF redline extraction.
 
   ## Usage
 
@@ -14,7 +14,7 @@ defmodule Mix.Tasks.PdfRedlines.Bench do
 
   use Mix.Task
 
-  @shortdoc "Benchmark PDF redline extraction and detection"
+  @shortdoc "Benchmark PDF redline extraction"
 
   @impl Mix.Task
   def run(_args) do
@@ -53,21 +53,17 @@ defmodule Mix.Tasks.PdfRedlines.Bench do
 
   defp benchmark_path(path) do
     {extract_us, extract_result} = timer(fn -> PDFRedlines.extract_redlines(path) end)
-    {has_us, has_result} = timer(fn -> PDFRedlines.has_redlines?(path) end)
 
     %{
       path: path,
       extract_us: extract_us,
-      has_us: has_us,
-      extract_ok?: match?({:ok, _}, extract_result),
-      has_ok?: match?({:ok, _}, has_result)
+      extract_ok?: match?({:ok, _}, extract_result)
     }
   end
 
   defp summarize(results) do
     total = length(results)
     extract_times = Enum.map(results, & &1.extract_us)
-    has_times = Enum.map(results, & &1.has_us)
 
     IO.puts("\nSummary (microseconds)")
 
@@ -75,14 +71,10 @@ defmodule Mix.Tasks.PdfRedlines.Bench do
       "Extract: avg=#{avg(extract_times)} p95=#{p95(extract_times)} max=#{Enum.max(extract_times)}"
     )
 
-    IO.puts("Has?:   avg=#{avg(has_times)} p95=#{p95(has_times)} max=#{Enum.max(has_times)}")
-
     extract_failures = Enum.count(results, &(!&1.extract_ok?))
-    has_failures = Enum.count(results, &(!&1.has_ok?))
 
     IO.puts("\nErrors")
     IO.puts("Extract failures: #{extract_failures}/#{total}")
-    IO.puts("Has? failures:    #{has_failures}/#{total}")
   end
 
   defp avg(values) do
