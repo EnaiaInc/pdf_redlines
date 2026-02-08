@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+- Improve parity-mode matching against the Python (PyMuPDF) reference extractor used in tests
+- Anonymize parity test output (no PDF file names/paths in logs or reports)
+
 ## 0.6.2
 
 - Fix off-by-one at formatting boundaries where the first character of an insertion was misclassified as part of the preceding deletion
