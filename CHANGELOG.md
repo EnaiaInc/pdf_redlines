@@ -2,7 +2,7 @@
 
 ## 0.7.1
 
-- Fix precompiled NIF checksum mismatch caused by release asset rebuild
+- Restrict Release workflow to tag pushes only, preventing unnecessary NIF rebuilds on main branch pushes
 
 ## 0.7.0
 
