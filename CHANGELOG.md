@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Fix precompiled NIF checksum mismatch caused by release asset rebuild
+
 ## 0.7.0
 
 - **Breaking:** Removed `has_redlines?/2` and `has_redlines_from_binary?/2`. Use `extract_redlines/2` and check `result.redlines == []` instead. The heuristic pre-check doubled PDF rendering cost and risked false negatives on non-standard redline colors or black strikethroughs.
