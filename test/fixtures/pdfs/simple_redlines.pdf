@@ -14,18 +14,18 @@ stream
 q
 1 0 0 rg
 BT
-/Helvetica 12 Tf
+/F1        12 Tf
 1 0 0 1 100 700 Tm
 (OLD) Tj
 ET
 BT
-/Helvetica 12 Tf
+/F1        12 Tf
 1 0 0 1 140 700 Tm
 (NEW) Tj
 ET
 0 0 1 rg
 BT
-/Helvetica 12 Tf
+/F1        12 Tf
 1 0 0 1 100 650 Tm
 (ADD) Tj
 ET

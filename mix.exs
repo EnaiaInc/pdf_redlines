@@ -1,7 +1,7 @@
 defmodule PDFRedlines.MixProject do
   use Mix.Project
 
-  @version "0.7.1"
+  @version "0.7.2"
   @source_url "https://github.com/EnaiaInc/pdf_redlines"
 
   def project do
@@ -30,12 +30,12 @@ defmodule PDFRedlines.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.37.1", optional: true},
-      {:rustler_precompiled, "~> 0.8.4"},
+      {:rustler, "~> 0.38.0", optional: true},
+      {:rustler_precompiled, "~> 0.9.0"},
       {:pythonx, "~> 0.4.0", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.39.3", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
       {:quokka, "~> 2.11", only: [:dev, :test], runtime: false}
     ]
   end

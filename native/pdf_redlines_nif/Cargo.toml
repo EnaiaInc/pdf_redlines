@@ -11,8 +11,8 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-mupdf = { version = "0.6", default-features = false, features = ["system-fonts"] }
-rustler = { version = "0.37", default-features = false, features = ["derive"] }
+mupdf = { version = "0.8", default-features = false, features = ["system-fonts"] }
+rustler = { version = "0.38", default-features = false, features = ["derive"] }
 
 [features]
 default = ["nif_version_2_15"]

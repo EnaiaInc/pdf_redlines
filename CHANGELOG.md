@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+- Update Rustler to 0.38 and RustlerPrecompiled to 0.9.
+- Update MuPDF to 0.8 and refresh transitive dependencies.
+- Correct the synthetic PDF fixture's font resource reference for current MuPDF parsing.
+
 ## 0.7.1
 
 - Restrict Release workflow to tag pushes only, preventing unnecessary NIF rebuilds on main branch pushes
